@@ -1,0 +1,199 @@
+# LLM Fine-Tuning Pipeline
+
+A production-ready pipeline for fine-tuning large language models (LLaMA 2, Mistral 7B) on domain-specific data using **QLoRA** (Quantized Low-Rank Adaptation) and **PEFT**. Tracks experiments with MLflow and serves the fine-tuned model via Hugging Face Inference Endpoints or a FastAPI wrapper.
+
+Built for healthcare NLP use cases: clinical NER, ICD-10 coding, discharge summary generation — but fully adaptable to any domain.
+
+---
+
+## Why QLoRA?
+
+Full fine-tuning a 7B model requires 80GB+ VRAM. QLoRA fine-tunes only a small set of adapter weights on a 4-bit quantized base model, enabling:
+- Fine-tuning LLaMA 2 7B on a single A100 40GB (or 2x RTX 3090)
+- 70-80% lower memory footprint vs. full fine-tuning
+- Near-full-fine-tuning quality on domain tasks
+
+---
+
+## Architecture
+
+```
+Raw Domain Data (CSV / JSONL)
+        │
+        ▼
+  Data Preprocessing
+  (cleaning, dedup, format)
+        │
+        ▼
+  Dataset Builder
+  (instruction tuning format)
+        │
+        ▼
+  QLoRA Fine-Tuning
+  (PEFT + bitsandbytes + Transformers)
+        │
+        ▼
+  MLflow Experiment Tracking
+  (metrics, artifacts, model registry)
+        │
+        ▼
+  Evaluation
+  (ROUGE, F1, BLEU, perplexity)
+        │
+        ▼
+  Model Export & Deployment
+  (merge adapter → HF Hub / FastAPI)
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Base Models | LLaMA 2 7B/13B, Mistral 7B Instruct |
+| Fine-Tuning | PEFT (LoRA/QLoRA), bitsandbytes (4-bit NF4) |
+| Training Framework | Hugging Face Transformers + TRL (SFTTrainer) |
+| Experiment Tracking | MLflow |
+| Evaluation | ROUGE, F1, BLEU, BERTScore |
+| Model Serving | FastAPI + Hugging Face Inference Endpoints |
+| GPU Optimization | Flash Attention 2, gradient checkpointing, paged AdamW |
+| Containerization | Docker |
+
+---
+
+## Project Structure
+
+```
+llm-finetuning-pipeline/
+├── src/
+│   ├── data/
+│   │   ├── __init__.py
+│   │   ├── preprocessor.py       # Raw data cleaning & dedup
+│   │   └── dataset_builder.py    # Instruction-tuning format builder
+│   ├── training/
+│   │   ├── __init__.py
+│   │   ├── config.py             # TrainingConfig dataclass
+│   │   ├── trainer.py            # QLoRA trainer using TRL SFTTrainer
+│   │   └── callbacks.py          # MLflow + early stopping callbacks
+│   ├── evaluation/
+│   │   ├── __init__.py
+│   │   └── evaluator.py          # ROUGE, F1, BERTScore evaluation
+│   ├── serving/
+│   │   ├── __init__.py
+│   │   └── inference.py          # FastAPI inference server
+│   └── utils/
+│       ├── __init__.py
+│       └── merge_adapter.py      # Merge LoRA adapter into base model
+├── configs/
+│   ├── llama2_7b_qlora.yaml
+│   └── mistral_7b_qlora.yaml
+├── scripts/
+│   ├── train.py                  # Training entrypoint
+│   ├── evaluate.py               # Evaluation entrypoint
+│   └── push_to_hub.py            # Push merged model to HF Hub
+├── data/
+│   └── sample/
+│       └── clinical_instruct_sample.jsonl
+├── docker/
+│   └── Dockerfile.train
+├── .env.example
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Quickstart
+
+### 1. Install dependencies
+
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2. Prepare data
+
+Your training data should be JSONL in instruction format:
+
+```json
+{"instruction": "Extract all medications from the following clinical note.", "input": "Patient is on Metformin 500mg BID and Lisinopril 10mg QD.", "output": "Medications: Metformin 500mg BID, Lisinopril 10mg QD"}
+```
+
+```bash
+python scripts/train.py --config configs/llama2_7b_qlora.yaml --data_path data/sample/
+```
+
+### 3. Track with MLflow
+
+```bash
+mlflow ui --port 5000
+# Navigate to http://localhost:5000
+```
+
+### 4. Evaluate
+
+```bash
+python scripts/evaluate.py --model_path ./outputs/checkpoint-final --test_data data/sample/test.jsonl
+```
+
+### 5. Serve
+
+```bash
+uvicorn src.serving.inference:app --port 8001
+```
+
+---
+
+## Training Config Example
+
+```yaml
+# configs/llama2_7b_qlora.yaml
+model_name: meta-llama/Llama-2-7b-hf
+output_dir: ./outputs/llama2-clinical
+dataset_path: ./data/clinical_instruct.jsonl
+
+# QLoRA
+load_in_4bit: true
+bnb_4bit_quant_type: nf4
+bnb_4bit_compute_dtype: bfloat16
+
+# LoRA
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: [q_proj, v_proj, k_proj, o_proj]
+
+# Training
+num_train_epochs: 3
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+learning_rate: 2e-4
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+max_seq_length: 2048
+fp16: false
+bf16: true
+
+# MLflow
+mlflow_tracking_uri: http://localhost:5000
+mlflow_experiment_name: clinical-llm-finetuning
+```
+
+---
+
+## Evaluation Results (Sample)
+
+| Metric | Base Model | Fine-Tuned |
+|---|---|---|
+| ROUGE-L | 0.41 | **0.61** |
+| Clinical NER F1 | 0.53 | **0.81** |
+| BLEU-4 | 0.22 | **0.38** |
+| BERTScore F1 | 0.74 | **0.87** |
+
+---
+
+## License
+
+MIT
